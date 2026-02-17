@@ -75,8 +75,6 @@ class LangchainRAGSystem:
         if match:
             return f"ANSWER: {match.group(1).strip()} [END ANSWER]"
         
-        print(f'[DEBUG] Full answer: {result['result']}')
-        
         return answer
     
     def query(self, user_input: str) -> Tuple[str, List[str]]:
