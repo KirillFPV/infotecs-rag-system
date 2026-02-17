@@ -5,6 +5,10 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
+from langchain_community.document_loaders import DirectoryLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from systems.PDFPlumberLoader import PDFPlumberLoader
 
 
 class VectorDBBuilder:
@@ -119,6 +123,91 @@ class VectorDBBuilder:
             embedding=self.embedding_model,
         )
         vector_store.add_documents(documents)
+
+        return vector_store
+
+    def create_qdrant_fromPDF(
+        self,
+        pdf_path: str,
+        client: QdrantClient,
+        collection_name: str,
+        chunk_size: int,
+        chunk_overlap: int,
+        glob_pattern: str = "**/*.pdf",
+        new_data: bool = False  # Новый флаг для принудительной перезагрузки
+    ) -> QdrantVectorStore:
+        """
+        Загружает PDF-документы из папки, разбивает на чанки и добавляет в коллекцию Qdrant.
+        Если коллекция уже существует и new_data=False, загрузка пропускается.
+        Если new_data=True, существующая коллекция удаляется и создаётся заново.
+
+        Аргументы
+        ---------
+        pdf_path : str
+            Путь к папке, содержащей PDF-файлы.
+        client : QdrantClient
+            Инициализированный клиент Qdrant.
+        collection_name : str
+            Имя коллекции в Qdrant.
+        chunk_size : int
+            Размер чанка в символах.
+        chunk_overlap : int
+            Перекрытие между соседними чанками.
+        glob_pattern : str, optional
+            Шаблон для поиска PDF-файлов (по умолчанию "**/*.pdf").
+        new_data : bool, optional
+            Если True, игнорирует наличие коллекции и принудительно перезаписывает данные.
+
+        Возвращает
+        ----------
+        vector_store : QdrantVectorStore
+            Объект векторного хранилища, содержащий загруженные документы.
+        """
+        # Проверяем существование коллекции
+        collection_exists = client.collection_exists(collection_name)
+
+        # Если new_data=False и коллекция уже есть – просто подключаемся к ней
+        if not new_data and collection_exists:
+            print(f"Коллекция '{collection_name}' уже существует. Загрузка пропущена. "
+                  "Используйте new_data=True для принудительной перезагрузки.")
+            return self.load_qdrant(client, collection_name, self.embedding_model)
+
+        # Если new_data=True и коллекция существует – удаляем её для последующей перезаписи
+        if new_data and collection_exists:
+            print(f"Удаление существующей коллекции '{collection_name}' для перезагрузки.")
+            client.delete_collection(collection_name)
+
+        # --- Загрузка и обработка PDF ---
+        # 1. Загрузка всех PDF-файлов из указанной папки
+        loader = DirectoryLoader(
+            path=pdf_path,
+            glob=glob_pattern,
+            loader_cls=PDFPlumberLoader,
+        )
+        documents = loader.load()
+        print(f"Загружено документов: {len(documents)}")
+
+        # 2. Разбиение на чанки
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            length_function=len,
+        )
+        chunks = text_splitter.split_documents(documents)
+        print(f"Получено фрагментов: {len(chunks)}")
+
+        # 3. Извлечение текстов и метаданных из чанков
+        texts = [chunk.page_content for chunk in chunks]
+        metadata = [chunk.metadata for chunk in chunks]
+
+        # 4. Использование существующего метода create_qdrant для загрузки
+        vector_store = self.create_qdrant(
+            texts=texts,
+            client=client,
+            collection_name=collection_name,
+            metadata=metadata
+        )
+        print(f"Данные успешно загружены в коллекцию '{collection_name}'")
 
         return vector_store
 
